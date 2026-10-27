@@ -12,3 +12,8 @@ logs/
 .pytest_cache/
 dist/
 build/
+data/
+*.db
+*.sqlite
+*.sqlite3
+eval/results.json

@@ -1,0 +1,69 @@
+[
+  {
+    "id": "tc_01_list_files",
+    "category": "repository_exploration",
+    "query": "List all source files available in this project.",
+    "expected_tool": "list_files",
+    "expected_keywords": ["app/agent.py", "app/server.py"],
+    "requires_rag": false
+  },
+  {
+    "id": "tc_02_read_file",
+    "category": "code_reading",
+    "query": "Read the contents of app/server.py and tell me what MCP tools are registered.",
+    "expected_tool": "read_file",
+    "expected_keywords": ["list_files", "read_file", "search_codebase"],
+    "requires_rag": false
+  },
+  {
+    "id": "tc_03_rag_embedder",
+    "category": "rag_semantic_search",
+    "query": "Where and how is the deterministic local semantic embedding computed in this project?",
+    "expected_tool": "search_codebase",
+    "expected_source": "app/rag.py",
+    "expected_keywords": ["LocalEmbedder", "embed_text", "hashlib"],
+    "requires_rag": true
+  },
+  {
+    "id": "tc_04_rag_issue_validation",
+    "category": "rag_semantic_search",
+    "query": "Find the code that checks maximum title length and validates GitHub issue drafts.",
+    "expected_tool": "search_codebase",
+    "expected_source": "app/agent.py",
+    "expected_keywords": ["validate_issue_draft", "MAX_TITLE_LENGTH"],
+    "requires_rag": true
+  },
+  {
+    "id": "tc_05_github_list_repos",
+    "category": "github_read",
+    "query": "What GitHub repositories can I access with the configured credentials?",
+    "expected_tool": "list_repositories",
+    "expected_keywords": ["repositories", "owner"],
+    "requires_rag": false
+  },
+  {
+    "id": "tc_06_github_list_issues",
+    "category": "github_read",
+    "query": "List the current open issues in the configured GitHub repository.",
+    "expected_tool": "list_issues",
+    "expected_keywords": ["issues"],
+    "requires_rag": false
+  },
+  {
+    "id": "tc_07_issue_drafting",
+    "category": "github_safety",
+    "query": "Please propose an issue titled 'Add retry loop to MCP client' describing connection resilience.",
+    "expected_tool": "draft_github_issue",
+    "expected_keywords": ["pending_approval", "CREATE"],
+    "requires_approval": true,
+    "requires_rag": false
+  },
+  {
+    "id": "tc_08_conversation_reset",
+    "category": "memory_management",
+    "query": "/reset",
+    "expected_command": "/reset",
+    "expected_outcome": "new_conversation_id",
+    "requires_rag": false
+  }
+]

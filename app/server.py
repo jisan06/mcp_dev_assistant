@@ -90,5 +90,50 @@ def read_file(file_path: str) -> str:
     return target.read_text(encoding="utf-8")
 
 
+import sys
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from app.rag import get_rag_database
+
+
+@mcp.tool()
+def index_codebase(force: bool = False) -> str:
+    """Index or incrementally re-index local project source files into the vector database.
+
+    Args:
+        force: If True, re-index all files regardless of modification status.
+    """
+    rag = get_rag_database()
+    stats = rag.index_codebase(root_dir=REPOSITORY_ROOT, force=force)
+    return json.dumps(stats, indent=2)
+
+
+@mcp.tool()
+def search_codebase(query: str, top_k: int = 5) -> str:
+    """Semantically search indexed project files and documentation.
+
+    Returns relevant code chunks with exact file paths and line numbers.
+
+    Args:
+        query: The semantic search query describing the code or feature.
+        top_k: Number of relevant chunks to retrieve (default 5).
+    """
+    rag = get_rag_database()
+    results = rag.search(query=query, top_k=top_k)
+    if not results:
+        return "No relevant code chunks found. Ensure the codebase is indexed using index_codebase."
+
+    formatted = []
+    for idx, item in enumerate(results, 1):
+        formatted.append(
+            f"--- Result {idx} | File: {item['file_path']} (Lines {item['start_line']}-{item['end_line']}) | Similarity: {item['score']} ---\n"
+            f"{item['content']}\n"
+        )
+
+    return "\n".join(formatted)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
+
