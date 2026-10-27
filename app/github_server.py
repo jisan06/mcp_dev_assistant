@@ -2,6 +2,7 @@
 import json
 import os
 import re
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("GitHub Assistant")
 
-PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -46,7 +47,9 @@ async def github_get(endpoint: str, params: dict | None = None):
         )
 
     if response.status_code == 401:
-        raise RuntimeError("GitHub authentication failed. Check GITHUB_TOKEN.")
+        raise RuntimeError(
+            "GitHub authentication failed. Check GITHUB_TOKEN."
+        )
 
     if response.status_code == 403:
         raise RuntimeError(
@@ -137,7 +140,11 @@ async def list_issues(
 
 
 @mcp.tool()
-async def get_issue(owner: str, repo: str, issue_number: int) -> str:
+async def get_issue(
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> str:
     """Get the details of a specific issue in a repository."""
     try:
         validate_repository(owner, repo)
@@ -164,6 +171,77 @@ async def get_issue(owner: str, repo: str, issue_number: int) -> str:
             result["note"] = "This item is a pull request, not an issue."
 
         return json.dumps(result, indent=2)
+
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@mcp.tool()
+async def create_issue(
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+) -> str:
+    """Create a GitHub issue after the calling application obtains
+    explicit human approval.
+    """
+    try:
+        validate_repository(owner, repo)
+
+        title = title.strip()
+        body = body.strip()
+
+        if not title:
+            raise ValueError("Issue title cannot be empty.")
+
+        if len(title) > 256:
+            raise ValueError(
+                "Issue title must be 256 characters or fewer."
+            )
+
+        if not body:
+            raise ValueError("Issue body cannot be empty.")
+
+        if not GITHUB_TOKEN:
+            raise RuntimeError("GITHUB_TOKEN is missing from .env.")
+
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            response = await http.post(
+                f"{GITHUB_API}/repos/{owner}/{repo}/issues",
+                headers=HEADERS,
+                json={
+                    "title": title,
+                    "body": body,
+                },
+            )
+
+        if response.status_code == 401:
+            raise RuntimeError("GitHub authentication failed.")
+
+        if response.status_code == 403:
+            raise RuntimeError(
+                "GitHub denied issue creation. Check token permissions "
+                "and API rate limits."
+            )
+
+        if response.status_code == 404:
+            raise RuntimeError(
+                "Repository not found or token lacks access."
+            )
+
+        response.raise_for_status()
+        issue = response.json()
+
+        return json.dumps(
+            {
+                "success": True,
+                "number": issue["number"],
+                "title": issue["title"],
+                "html_url": issue["html_url"],
+            },
+            indent=2,
+        )
 
     except Exception as exc:
         return json.dumps({"error": str(exc)})
