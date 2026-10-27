@@ -84,13 +84,15 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def audit(event: str, **details) -> None:
-    """Append one structured audit event without logging secrets or bodies."""
+    """Append one structured audit event with trace correlation, without logging secrets or bodies."""
     try:
         AUDIT_DIR.mkdir(parents=True, exist_ok=True)
-
+        trace = get_current_trace()
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
+            "trace_id": trace.trace_id if trace else None,
+            "thread_id": trace.thread_id if trace else None,
             **details,
         }
 
@@ -360,6 +362,13 @@ async def main():
             sources = re.findall(r"Citation:\s*([^\s\n]+)", text)
             scores = [float(s) for s in re.findall(r"Similarity:\s*([0-9.]+)", text)]
             top_score = max(scores) if scores else 0.0
+            is_err = text.startswith("Tool error:")
+            success = len(sources) > 0 and not is_err
+            error_reason = (
+                text[:150]
+                if is_err
+                else (None if len(sources) > 0 else "No chunks matched similarity threshold")
+            )
 
             trace = get_current_trace()
             if trace:
@@ -369,6 +378,8 @@ async def main():
                     retrieved_count=len(sources),
                     top_score=top_score,
                     sources=sources,
+                    success=success,
+                    error=error_reason if not success else None,
                 )
             audit(
                 "rag_retrieval",
@@ -377,6 +388,8 @@ async def main():
                 retrieved_count=len(sources),
                 top_score=top_score,
                 sources=sources,
+                success=success,
+                error=error_reason if not success else None,
             )
             return text
 
@@ -647,218 +660,218 @@ async def main():
                     )
 
                     new_messages = all_messages[prev_message_count:]
-                drafts = []
-                draft_errors = []
+                    drafts = []
+                    draft_errors = []
 
-                for message in new_messages:
-                    if getattr(message, "name", None) != (
-                        "draft_github_issue"
-                    ):
-                        continue
-
-                    content = getattr(message, "content", "")
-                    if not isinstance(content, str):
-                        continue
-
-                    try:
-                        data = json.loads(content)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if data.get("pending_approval") is True:
-                        drafts.append(data)
-                    elif data.get("error"):
-                        draft_errors.append(data["error"])
-
-                if draft_errors:
-                    for error in draft_errors:
-                        print("\nIssue draft error:", error)
-
-                elif len(drafts) > 1:
-                    print(
-                        "\nMultiple issue drafts were requested. "
-                        "No issues were created. Request one at a time."
-                    )
-
-                elif len(drafts) == 1:
-                    draft = drafts[0]
-                    owner = draft["owner"]
-                    repo = draft["repo"]
-                    title = draft["title"]
-                    body = draft["body"]
-
-                    try:
-                        # Validate again at the write boundary.
-                        validate_issue_draft(owner, repo, title, body)
-
-                        print("\n--- GitHub Issue Approval Required ---")
-                        print(f"Repository: {owner}/{repo}")
-                        print(f"Title: {title}")
-                        print(f"Body:\n{body}")
-
-                        confirmation = await asyncio.to_thread(
-                            input,
-                            "\nType CREATE to submit this exact issue, "
-                            "or anything else to cancel: ",
-                        )
-
-                        if confirmation.strip() != "CREATE":
-                            audit(
-                                "issue_cancelled",
-                                owner=owner,
-                                repo=repo,
-                                title=title,
-                                status="cancelled",
-                            )
-                            print(
-                                "\nIssue creation cancelled. "
-                                "No issue was submitted."
-                            )
+                    for message in new_messages:
+                        if getattr(message, "name", None) != (
+                            "draft_github_issue"
+                        ):
                             continue
 
-                        audit(
-                            "issue_approval_granted",
-                            owner=owner,
-                            repo=repo,
-                            title=title,
-                            status="approved",
-                        )
-
-                        # Check for duplicate titles before writing.
-                        # The current MCP list_issues tool returns up
-                        # to 30 issues; this is a safeguard, not a
-                        # guarantee of global duplicate prevention.
-                        audit(
-                            "duplicate_check_started",
-                            owner=owner,
-                            repo=repo,
-                        )
-
-                        duplicate_result = await github_client.call_tool(
-                            "list_issues",
-                            {
-                                "owner": owner,
-                                "repo": repo,
-                                "state": "all",
-                            },
-                        )
-
-                        duplicate_text = get_text(duplicate_result)
-                        if duplicate_text.startswith("Tool error:"):
-                            raise RuntimeError(duplicate_text)
-
-                        try:
-                            existing_issues = json.loads(duplicate_text)
-                        except json.JSONDecodeError as exc:
-                            raise RuntimeError(
-                                "Could not verify existing issues; "
-                                "submission blocked."
-                            ) from exc
-
-                        if not isinstance(existing_issues, list):
-                            raise RuntimeError(
-                                "Unexpected issue-list response; "
-                                "submission blocked."
-                            )
-
-                        normalized_title = " ".join(title.casefold().split())
-
-                        duplicates = [
-                            issue for issue in existing_issues
-                            if isinstance(issue, dict)
-                            and isinstance(issue.get("title"), str)
-                            and " ".join(
-                                issue["title"].casefold().split()
-                            ) == normalized_title
-                        ]
-
-                        if duplicates:
-                            audit(
-                                "issue_blocked_duplicate",
-                                owner=owner,
-                                repo=repo,
-                                title=title,
-                                matching_issue_numbers=[
-                                    issue.get("number")
-                                    for issue in duplicates
-                                ],
-                                status="blocked",
-                            )
-                            print(
-                                "\nSubmission blocked: an issue with "
-                                "the same title already exists in the "
-                                "issues returned by GitHub."
-                            )
+                        content = getattr(message, "content", "")
+                        if not isinstance(content, str):
                             continue
 
-                        # Audit failure must stop submission.
-                        audit(
-                            "issue_submission_started",
-                            owner=owner,
-                            repo=repo,
-                            title=title,
-                            status="started",
+                        try:
+                            data = json.loads(content)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if data.get("pending_approval") is True:
+                            drafts.append(data)
+                        elif data.get("error"):
+                            draft_errors.append(data["error"])
+
+                    if draft_errors:
+                        for error in draft_errors:
+                            print("\nIssue draft error:", error)
+
+                    elif len(drafts) > 1:
+                        print(
+                            "\nMultiple issue drafts were requested. "
+                            "No issues were created. Request one at a time."
                         )
 
-                        approval_token = generate_approval_token(owner, repo, title)
+                    elif len(drafts) == 1:
+                        draft = drafts[0]
+                        owner = draft["owner"]
+                        repo = draft["repo"]
+                        title = draft["title"]
+                        body = draft["body"]
 
-                        result = await github_client.call_tool(
-                            "create_issue",
-                            {
-                                "owner": owner,
-                                "repo": repo,
-                                "title": title,
-                                "body": body,
-                                "approval_token": approval_token,
-                            },
-                        )
+                        try:
+                            # Validate again at the write boundary.
+                            validate_issue_draft(owner, repo, title, body)
 
-                        result_text = get_text(result)
-                        if result_text.startswith("Tool error:"):
-                            raise RuntimeError(result_text)
+                            print("\n--- GitHub Issue Approval Required ---")
+                            print(f"Repository: {owner}/{repo}")
+                            print(f"Title: {title}")
+                            print(f"Body:\n{body}")
 
-                        issue_data = parse_json_result(result_text)
-
-                        if issue_data.get("success") is not True:
-                            raise RuntimeError(
-                                "GitHub did not confirm issue creation."
+                            confirmation = await asyncio.to_thread(
+                                input,
+                                "\nType CREATE to submit this exact issue, "
+                                "or anything else to cancel: ",
                             )
 
-                        audit(
-                            "issue_created",
-                            owner=owner,
-                            repo=repo,
-                            title=title,
-                            issue_number=issue_data.get("number"),
-                            issue_url=issue_data.get("html_url"),
-                            status="success",
-                        )
+                            if confirmation.strip() != "CREATE":
+                                audit(
+                                    "issue_cancelled",
+                                    owner=owner,
+                                    repo=repo,
+                                    title=title,
+                                    status="cancelled",
+                                )
+                                print(
+                                    "\nIssue creation cancelled. "
+                                    "No issue was submitted."
+                                )
+                                continue
 
-                        print("\nGitHub result:", result_text)
-
-                    except Exception as exc:
-                        # Do not log request bodies, credentials, or
-                        # arbitrary tool response content.
-                        try:
                             audit(
-                                "issue_submission_failed",
+                                "issue_approval_granted",
                                 owner=owner,
                                 repo=repo,
                                 title=title,
-                                error_type=type(exc).__name__,
-                                status="failed_or_unverified",
+                                status="approved",
                             )
-                        except Exception:
-                            pass
 
-                        print(f"\nIssue operation failed: {exc}\n")
+                            # Check for duplicate titles before writing.
+                            # The current MCP list_issues tool returns up
+                            # to 30 issues; this is a safeguard, not a
+                            # guarantee of global duplicate prevention.
+                            audit(
+                                "duplicate_check_started",
+                                owner=owner,
+                                repo=repo,
+                            )
 
-                else:
-                    final_message = all_messages[-1]
-                    content = getattr(final_message, "content", "")
-                    print(f"\n[Trace ID: {trace.trace_id}]")
-                    print("Assistant:", content, "\n")
-                    save_thread_id(thread_id)
+                            duplicate_result = await github_client.call_tool(
+                                "list_issues",
+                                {
+                                    "owner": owner,
+                                    "repo": repo,
+                                    "state": "all",
+                                },
+                            )
+
+                            duplicate_text = get_text(duplicate_result)
+                            if duplicate_text.startswith("Tool error:"):
+                                raise RuntimeError(duplicate_text)
+
+                            try:
+                                existing_issues = json.loads(duplicate_text)
+                            except json.JSONDecodeError as exc:
+                                raise RuntimeError(
+                                    "Could not verify existing issues; "
+                                    "submission blocked."
+                                ) from exc
+
+                            if not isinstance(existing_issues, list):
+                                raise RuntimeError(
+                                    "Unexpected issue-list response; "
+                                    "submission blocked."
+                                )
+
+                            normalized_title = " ".join(title.casefold().split())
+
+                            duplicates = [
+                                issue for issue in existing_issues
+                                if isinstance(issue, dict)
+                                and isinstance(issue.get("title"), str)
+                                and " ".join(
+                                    issue["title"].casefold().split()
+                                ) == normalized_title
+                            ]
+
+                            if duplicates:
+                                audit(
+                                    "issue_blocked_duplicate",
+                                    owner=owner,
+                                    repo=repo,
+                                    title=title,
+                                    matching_issue_numbers=[
+                                        issue.get("number")
+                                        for issue in duplicates
+                                    ],
+                                    status="blocked",
+                                )
+                                print(
+                                    "\nSubmission blocked: an issue with "
+                                    "the same title already exists in the "
+                                    "issues returned by GitHub."
+                                )
+                                continue
+
+                            # Audit failure must stop submission.
+                            audit(
+                                "issue_submission_started",
+                                owner=owner,
+                                repo=repo,
+                                title=title,
+                                status="started",
+                            )
+
+                            approval_token = generate_approval_token(owner, repo, title)
+
+                            result = await github_client.call_tool(
+                                "create_issue",
+                                {
+                                    "owner": owner,
+                                    "repo": repo,
+                                    "title": title,
+                                    "body": body,
+                                    "approval_token": approval_token,
+                                },
+                            )
+
+                            result_text = get_text(result)
+                            if result_text.startswith("Tool error:"):
+                                raise RuntimeError(result_text)
+
+                            issue_data = parse_json_result(result_text)
+
+                            if issue_data.get("success") is not True:
+                                raise RuntimeError(
+                                    "GitHub did not confirm issue creation."
+                                )
+
+                            audit(
+                                "issue_created",
+                                owner=owner,
+                                repo=repo,
+                                title=title,
+                                issue_number=issue_data.get("number"),
+                                issue_url=issue_data.get("html_url"),
+                                status="success",
+                            )
+
+                            print("\nGitHub result:", result_text)
+
+                        except Exception as exc:
+                            # Do not log request bodies, credentials, or
+                            # arbitrary tool response content.
+                            try:
+                                audit(
+                                    "issue_submission_failed",
+                                    owner=owner,
+                                    repo=repo,
+                                    title=title,
+                                    error_type=type(exc).__name__,
+                                    status="failed_or_unverified",
+                                )
+                            except Exception:
+                                pass
+
+                            print(f"\nIssue operation failed: {exc}\n")
+
+                    else:
+                        final_message = all_messages[-1]
+                        content = getattr(final_message, "content", "")
+                        print(f"\n[Trace ID: {trace.trace_id}]")
+                        print("Assistant:", content, "\n")
+                        save_thread_id(thread_id)
 
             except Exception as exc:
                 err_text = str(exc)
