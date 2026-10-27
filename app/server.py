@@ -117,27 +117,39 @@ def index_codebase(force: bool = False) -> str:
 
 
 @mcp.tool()
-def search_codebase(query: str, top_k: int = 5) -> str:
+def search_codebase(query: str, top_k: int = 5, min_similarity: float = 0.15) -> str:
     """Semantically search indexed project files and documentation.
 
-    Returns relevant code chunks with exact file paths and line numbers.
+    Returns relevant code chunks with exact file paths, line numbers, and citations.
 
     Args:
         query: The semantic search query describing the code or feature.
         top_k: Number of relevant chunks to retrieve (default 5).
+        min_similarity: Minimum similarity score threshold between 0.0 and 1.0 (default 0.15).
     """
     if not default_policy.is_permission_enabled(Permission.FILE_SEARCH):
         raise PermissionError("Access denied: file:search permission is disabled by policy.")
 
     rag = get_rag_database()
-    results = rag.search(query=query, top_k=top_k)
+    results = rag.search(query=query, top_k=top_k, min_similarity=min_similarity)
     if not results:
-        return "No relevant code chunks found. Ensure the codebase is indexed using index_codebase."
+        indexed_count = len(rag.get_indexed_files())
+        if indexed_count == 0:
+            return (
+                "No indexed documents found in vector store. "
+                "Run index_codebase() to index project files."
+            )
+        return (
+            f"No relevant code chunks found for query '{query}' "
+            f"(threshold {min_similarity}). Try rephrasing or running index_codebase."
+        )
 
-    formatted = []
+    formatted = [f"Found {len(results)} relevant code chunk(s) for query: '{query}'\n"]
     for idx, item in enumerate(results, 1):
+        scope_info = f" | Scope: {item['scope']}" if item.get("scope") else ""
         formatted.append(
-            f"--- Result {idx} | File: {item['file_path']} (Lines {item['start_line']}-{item['end_line']}) | Similarity: {item['score']} ---\n"
+            f"--- Result {idx} | File: {item['file_path']} (Lines {item['start_line']}-{item['end_line']}) | Similarity: {item['score']}{scope_info} ---\n"
+            f"Citation: {item['file_path']}:{item['start_line']}-{item['end_line']}\n"
             f"{item['content']}\n"
         )
 

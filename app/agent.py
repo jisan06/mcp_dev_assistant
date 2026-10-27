@@ -322,30 +322,62 @@ async def main():
                 "index_codebase",
                 {"force": force},
             )
-            return get_text(result)
+            text = get_text(result)
+            try:
+                stats = json.loads(text)
+                audit(
+                    "rag_indexed",
+                    status=stats.get("status"),
+                    added=stats.get("added_files", 0),
+                    updated=stats.get("updated_files", 0),
+                    deleted=stats.get("deleted_files", 0),
+                    chunks=stats.get("total_chunks_indexed", 0),
+                )
+            except Exception:
+                pass
+            return text
 
         @tool
-        async def search_codebase(query: str, top_k: int = 5) -> str:
+        async def search_codebase(query: str, top_k: int = 5, min_similarity: float = 0.15) -> str:
             """Semantically search indexed source code and documentation chunks.
-            Returns relevant code blocks with exact file paths and line ranges.
+            Returns relevant code blocks with exact file paths, line ranges, and citations.
+
+            Args:
+                query: Natural language or code search query.
+                top_k: Maximum number of relevant chunks to return (default 5).
+                min_similarity: Minimum similarity score threshold between 0.0 and 1.0 (default 0.15).
             """
             t0 = time.perf_counter()
             result = await traced_call(
                 local_client,
                 "search_codebase",
-                {"query": query, "top_k": top_k},
+                {"query": query, "top_k": top_k, "min_similarity": min_similarity},
             )
             dur = (time.perf_counter() - t0) * 1000
             text = get_text(result)
+
+            # Parse citations and scores for telemetry and audit
+            sources = re.findall(r"Citation:\s*([^\s\n]+)", text)
+            scores = [float(s) for s in re.findall(r"Similarity:\s*([0-9.]+)", text)]
+            top_score = max(scores) if scores else 0.0
+
             trace = get_current_trace()
             if trace:
-                res_count = text.count("--- Result ")
                 trace.record_rag(
                     query=query,
                     duration_ms=dur,
-                    retrieved_count=res_count,
-                    top_score=1.0 if res_count > 0 else 0.0,
+                    retrieved_count=len(sources),
+                    top_score=top_score,
+                    sources=sources,
                 )
+            audit(
+                "rag_retrieval",
+                query=query,
+                duration_ms=round(dur, 2),
+                retrieved_count=len(sources),
+                top_score=top_score,
+                sources=sources,
+            )
             return text
 
         # ---------- GitHub read-only tools ----------
