@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 .env
 .env.*
+logs/
 !.env.example
 .idea/
 .vscode/
