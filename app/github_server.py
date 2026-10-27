@@ -14,6 +14,12 @@ mcp = MCPServer("GitHub Assistant")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+import sys
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.security import default_policy, Permission
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_API = "https://api.github.com"
 
@@ -70,6 +76,9 @@ async def github_get(endpoint: str, params: dict | None = None):
 async def list_repositories() -> str:
     """List repositories accessible to the authenticated GitHub user."""
     try:
+        if not default_policy.is_permission_enabled(Permission.GITHUB_READ):
+            raise PermissionError("Access denied: github:read permission is disabled by policy.")
+
         data = await github_get(
             "/user/repos",
             params={
@@ -105,7 +114,7 @@ async def list_issues(
 ) -> str:
     """List issues in a repository. State must be open, closed, or all."""
     try:
-        validate_repository(owner, repo)
+        default_policy.authorize_github_read(owner, repo)
 
         if state not in {"open", "closed", "all"}:
             raise ValueError("State must be open, closed, or all.")
@@ -147,7 +156,7 @@ async def get_issue(
 ) -> str:
     """Get the details of a specific issue in a repository."""
     try:
-        validate_repository(owner, repo)
+        default_policy.authorize_github_read(owner, repo)
 
         if issue_number < 1:
             raise ValueError("Issue number must be a positive integer.")
@@ -182,12 +191,14 @@ async def create_issue(
     repo: str,
     title: str,
     body: str,
+    approval_token: str = "",
 ) -> str:
     """Create a GitHub issue after the calling application obtains
-    explicit human approval.
+    explicit human approval and supplies a valid approval token.
     """
     try:
-        validate_repository(owner, repo)
+        # Enforce server-side authorization and human approval token
+        default_policy.authorize_github_write(owner, repo, title, approval_token)
 
         title = title.strip()
         body = body.strip()

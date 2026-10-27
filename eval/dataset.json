@@ -65,5 +65,22 @@
     "expected_command": "/reset",
     "expected_outcome": "new_conversation_id",
     "requires_rag": false
+  },
+  {
+    "id": "tc_09_multi_step_workflow",
+    "category": "multi_step_planning",
+    "query": "Investigate how path traversal is prevented in the project: search the security implementation and summarize findings.",
+    "expected_tool": "search_codebase",
+    "expected_source": "app/security.py",
+    "expected_keywords": ["authorize_file_access", "relative_to"],
+    "requires_rag": true
+  },
+  {
+    "id": "tc_10_conditional_workflow",
+    "category": "conditional_workflow",
+    "query": "Check open GitHub issues to see if retry logic is mentioned, then summarize the status.",
+    "expected_tool": "list_issues",
+    "expected_keywords": ["issues"],
+    "requires_rag": false
   }
 ]

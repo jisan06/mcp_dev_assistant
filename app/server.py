@@ -51,19 +51,35 @@ def is_excluded(path: Path) -> bool:
     return False
 
 
+import sys
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from app.rag import get_rag_database
+from app.security import default_policy, Permission
+
+
 @mcp.tool()
 def list_files() -> list[str]:
     """List project files, excluding IDE and generated development files."""
+    if not default_policy.is_permission_enabled(Permission.FILE_LIST):
+        raise PermissionError("Access denied: file:list permission is disabled by policy.")
+
     files = []
 
     for path in REPOSITORY_ROOT.rglob("*"):
         if not path.is_file():
             continue
 
+        try:
+            default_policy.authorize_file_access(path)
+        except PermissionError:
+            continue
+
         if is_excluded(path):
             continue
 
-        files.append(str(path.relative_to(REPOSITORY_ROOT)))
+        files.append(str(path.relative_to(REPOSITORY_ROOT)).replace("\\", "/"))
 
     return sorted(files)
 
@@ -71,30 +87,18 @@ def list_files() -> list[str]:
 @mcp.tool()
 def read_file(file_path: str) -> str:
     """Read a UTF-8 text file inside the project, excluding development files."""
-    root = REPOSITORY_ROOT.resolve()
-    target = (root / file_path).resolve()
+    target = REPOSITORY_ROOT / file_path
 
-    # Prevent directory traversal outside the project.
-    if not target.is_relative_to(root):
-        raise ValueError("Access denied: file is outside the project.")
+    # Authorize against path traversal and sensitive file access
+    authorized_path = default_policy.authorize_file_access(target)
 
-    if is_excluded(target):
-        raise ValueError("Access denied: this file or directory is excluded.")
-
-    if not target.is_file():
+    if not authorized_path.is_file():
         raise FileNotFoundError("File not found.")
 
-    if target.stat().st_size > 200_000:
+    if authorized_path.stat().st_size > 200_000:
         raise ValueError("File exceeds the 200 KB limit.")
 
-    return target.read_text(encoding="utf-8")
-
-
-import sys
-if str(REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_ROOT))
-
-from app.rag import get_rag_database
+    return authorized_path.read_text(encoding="utf-8")
 
 
 @mcp.tool()
@@ -104,6 +108,9 @@ def index_codebase(force: bool = False) -> str:
     Args:
         force: If True, re-index all files regardless of modification status.
     """
+    if not default_policy.is_permission_enabled(Permission.FILE_INDEX):
+        raise PermissionError("Access denied: file:index permission is disabled by policy.")
+
     rag = get_rag_database()
     stats = rag.index_codebase(root_dir=REPOSITORY_ROOT, force=force)
     return json.dumps(stats, indent=2)
@@ -119,6 +126,9 @@ def search_codebase(query: str, top_k: int = 5) -> str:
         query: The semantic search query describing the code or feature.
         top_k: Number of relevant chunks to retrieve (default 5).
     """
+    if not default_policy.is_permission_enabled(Permission.FILE_SEARCH):
+        raise PermissionError("Access denied: file:search permission is disabled by policy.")
+
     rag = get_rag_database()
     results = rag.search(query=query, top_k=top_k)
     if not results:
